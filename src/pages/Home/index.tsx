@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
 import {
   Container,
   HeaderContainer,
@@ -17,19 +17,24 @@ import LogoutButton from '../../components/LogoutButton';
 import {bookCategories} from '../../schemas/BookCategories';
 import BookCard from '../../components/BookCard';
 import {booksService} from '../../services/books';
-import {FlatList, View, ActivityIndicator, StyleSheet} from 'react-native';
+import {FlatList, StyleSheet, RefreshControl} from 'react-native';
 
 import DescriptionModal, {IBook} from '../../components/DescriptionModal';
-import Loading from '../../components/Loading/Loading';
 
-const PAGE_DEFAULT = 1;
-const AMOUNT_DEFAULT = 25;
-let totalItems = 500;
+const PAGE = 1;
+const AMOUNT = 10;
+const TOTAL_ITEMS = 500;
+const TOTAL_PAGES = TOTAL_ITEMS / AMOUNT;
 
-let totalPages = totalItems / AMOUNT_DEFAULT;
+let actualPage = PAGE;
+let amount = AMOUNT;
+let totalItems = TOTAL_ITEMS;
+let totalPages = TOTAL_PAGES;
 
 const Home: React.FC = () => {
   const {user, signOut} = useAuth();
+
+  const flatListRef = useRef();
 
   const [filterModalVisibility, setFilterModalVisibility] = useState(false);
   const toogleFilterModalVisibility = () =>
@@ -40,52 +45,87 @@ const Home: React.FC = () => {
   const toogleDescriptionModalVisibility = () =>
     setDescriptionModalVisibility(!descriptionModalVisibility);
 
-  const [page, setPage] = useState(PAGE_DEFAULT);
   const [searchText, setSearchText] = useState('');
-
   const [selectedBook, setSelectedBook] = useState<IBook>(null);
-
-  const [shownArray, setShownArray] = useState([]);
-
   const [categoryArray, setCategoryArray] = useState([]);
 
+  const [booksDisplayed, setBooksDisplayed] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const loadData = async isTheFirstPage => {
-    if (loading) return;
-    const actualPage = isTheFirstPage ? PAGE_DEFAULT : page;
-    totalPages = isTheFirstPage ? totalItems / AMOUNT_DEFAULT : totalPages;
-    if (actualPage - 1 < totalPages) {
-      setLoading(true);
-      try {
-        const params = await mountParams(actualPage);
-        const response = await booksService.getBooks(params);
-        totalPages = response.data.totalPages;
-        setShownArray(
-          isTheFirstPage
-            ? response.data.data
-            : state => [...state, ...response.data.data],
-        );
-        setPage(actualPage + 1);
-      } catch (error) {
-        if (error.response.status === 401) {
-          alert('Sua sessão expirou!');
-          handleSignOut();
-        }
-      } finally {
-        setLoading(false);
+  const [hasMoreToLoadTop, setHasMoreToLoadTop] = useState(false);
+  const [hasMoreToLoadBottom, setHasMoreToLoadBottom] = useState(true);
+
+  useEffect(() => {
+    firstRequisiton();
+  }, []);
+
+  const getData = async (page, amount) => {
+    try {
+      const params = `?page=${page}&amount=${amount}&title=${searchText}`;
+      let categoryParams = '';
+      for (let index = 0; index < categoryArray.length; index++) {
+        const category = categoryArray[index];
+        categoryParams = `${categoryParams}&category=${category}`;
+      }
+      const response = await booksService.getBooks(params + categoryParams);
+      return response;
+    } catch (error) {
+      if (error.response.status === 401) {
+        alert('Sua sessão expirou!');
+        handleSignOut();
       }
     }
   };
 
-  const mountParams = async page => {
-    let params = `?page=${page}&amount=${AMOUNT_DEFAULT}&title=${searchText}`;
-    let categoryParams = '';
-    for (let index = 0; index < categoryArray.length; index++) {
-      const category = categoryArray[index];
-      categoryParams = `${categoryParams}&category=${category}`;
+  const passPage = async () => {
+    if (actualPage < totalPages) {
+      setLoading(true);
+      const response = await getData(actualPage + 1, amount);
+      const data = response.data.data;
+      actualPage = response.data.page;
+      totalPages = response.data.totalPages;
+      totalItems = response.data.totalItems;
+      setBooksDisplayed(data);
+      setLoading(false);
+      setHasMoreToLoadTop(true);
+      if (booksDisplayed.length > 0) {
+        flatListRef.current.scrollToOffset({animated: true, offset: 0});
+      }
+    } else {
+      setHasMoreToLoadBottom(false);
     }
-    return params + categoryParams;
+  };
+
+  const backPage = async () => {
+    if (actualPage > 1) {
+      setHasMoreToLoadTop(true);
+      setLoading(true);
+      const response = await getData(actualPage - 1, amount);
+      const data = response.data.data;
+      actualPage = response.data.page;
+      totalPages = response.data.totalPages;
+      totalItems = response.data.totalItems;
+      setBooksDisplayed(data);
+      setLoading(false);
+    } else {
+      setHasMoreToLoadTop(false);
+    }
+  };
+
+  const firstRequisiton = async () => {
+    setLoading(true);
+    setHasMoreToLoadBottom(true);
+    setHasMoreToLoadTop(false);
+    const response = await getData(PAGE, AMOUNT);
+    const data = response.data.data;
+    actualPage = response.data.page;
+    totalPages = response.data.totalPages;
+    totalItems = response.data.totalItems;
+    setBooksDisplayed(data);
+    setLoading(false);
+    if (booksDisplayed.length > 0) {
+      flatListRef.current.scrollToOffset({animated: true, offset: 0});
+    }
   };
 
   const handleCategoryArray = categoryName => {
@@ -102,34 +142,9 @@ const Home: React.FC = () => {
     signOut();
   };
 
-  useEffect(() => {
-    loadData(true);
-  }, []);
-
   const handleBookSelection = book => {
     setSelectedBook(book);
     toogleDescriptionModalVisibility();
-  };
-
-  const renderItem = ({item}) => (
-    <BookCard
-      book={item}
-      onPress={() => handleBookSelection(item)}
-      imageUrl={''}
-      title={''}
-      authors={[]}
-      pageCount={0}
-      publisher={''}
-      published={0}
-    />
-  );
-
-  const renderFooter = () => {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator size="large" />
-      </View>
-    );
   };
 
   return (
@@ -140,7 +155,7 @@ const Home: React.FC = () => {
         allCategories={bookCategories}
         selectedCategories={categoryArray}
         handleCategoryArray={handleCategoryArray}
-        filterByCategory={loadData}
+        filterByCategory={firstRequisiton}
       />
 
       <DescriptionModal
@@ -158,24 +173,32 @@ const Home: React.FC = () => {
           <SearchInput
             value={searchText}
             onChangeText={setSearchText}
-            search={loadData}
+            search={() => firstRequisiton()}
           />
           <Filter setModalVisible={setFilterModalVisibility} />
         </SearchAndFilterContainer>
         <BookListContainer>
-          {loading && <Loading />}
-          {shownArray.length === 0 ? (
+          {booksDisplayed.length === 0 && !loading && (
             <FooterText>Nenhum livro foi encontrado</FooterText>
-          ) : (
-            <FlatList
-              data={shownArray}
-              renderItem={renderItem}
-              keyExtractor={item => item.id}
-              onEndReached={() => loadData(false)}
-              onEndReachedThreshold={0.1}
-              style={{paddingTop: 32}}
-            />
           )}
+          <FlatList
+            ref={flatListRef}
+            data={booksDisplayed}
+            keyExtractor={item => String(item.id)}
+            renderItem={({item}) => (
+              <ListItem data={item} onPress={handleBookSelection} />
+            )}
+            // onRefresh={hasMoreToLoadTop ? backPage : null}
+            // refreshing={loading}
+            refreshControl={
+              <RefreshControl
+                refreshing={loading}
+                onRefresh={hasMoreToLoadTop ? backPage : null}
+              />
+            }
+            onEndReached={hasMoreToLoadBottom ? passPage : null}
+            onEndReachedThreshold={0.1}
+          />
         </BookListContainer>
       </Container>
     </>
@@ -190,5 +213,19 @@ const styles = StyleSheet.create({
     color: '#666',
   },
 });
+
+const ListItem = ({data, onPress}) => (
+  <BookCard
+    key={data.id}
+    book={data}
+    onPress={() => onPress(data)}
+    imageUrl={''}
+    title={''}
+    authors={[]}
+    pageCount={0}
+    publisher={''}
+    published={0}
+  />
+);
 
 export default Home;
